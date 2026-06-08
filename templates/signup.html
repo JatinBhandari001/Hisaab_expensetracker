@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Sign Up - Expense Tracker Lite{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex items-center justify-center">
+  <div class="w-full max-w-md">
+    <div class="rounded-2xl border border-slate-800 bg-slate-900 p-8">
+      <h2 class="text-2xl font-semibold mb-6 text-center">Sign Up</h2>
+      
+      <form method="POST" class="space-y-4">
+        <div>
+          <label class="block text-sm text-slate-300 mb-2">Username</label>
+          <input
+            type="text"
+            name="username"
+            required
+            class="w-full rounded-lg bg-slate-800 border border-slate-700 px-4 py-2 text-slate-100 focus:outline-none focus:border-brand"
+            placeholder="Choose a username"
+          />
+        </div>
+
+        <div>
+          <label class="block text-sm text-slate-300 mb-2">Email</label>
+          <input
+            type="email"
+            name="email"
+            required
+            class="w-full rounded-lg bg-slate-800 border border-slate-700 px-4 py-2 text-slate-100 focus:outline-none focus:border-brand"
+            placeholder="Enter your email"
+          />
+        </div>
+
+        <div>
+          <label class="block text-sm text-slate-300 mb-2">Password</label>
+          <input
+            type="password"
+            name="password"
+            required
+            class="w-full rounded-lg bg-slate-800 border border-slate-700 px-4 py-2 text-slate-100 focus:outline-none focus:border-brand"
+            placeholder="Create a password"
+          />
+        </div>
+
+        <div>
+          <label class="block text-sm text-slate-300 mb-2">Confirm Password</label>
+          <input
+            type="password"
+            name="confirm_password"
+            required
+            class="w-full rounded-lg bg-slate-800 border border-slate-700 px-4 py-2 text-slate-100 focus:outline-none focus:border-brand"
+            placeholder="Confirm your password"
+          />
+        </div>
+
+        <button
+          type="submit"
+          class="w-full rounded-lg bg-brand hover:bg-brand/90 text-slate-900 font-semibold py-2 mt-6 transition"
+        >
+          Sign Up
+        </button>
+      </form>
+
+      <div class="mt-6 text-center text-slate-400">
+        Already have an account?
+        <a href="{{ url_for('login') }}" class="text-brand hover:underline">Login here</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
