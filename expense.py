@@ -1,32 +1,126 @@
-from flask import Flask, flash, render_template, request, url_for, make_response, redirect
+from flask import Flask, flash, render_template, request, url_for, make_response, redirect, session
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
-from datetime import date, datetime 
+from datetime import date, datetime
+from werkzeug.security import generate_password_hash, check_password_hash
+import calendar
+import os
 
 app = Flask(__name__)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///expenses.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'my-secret-key'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'my-secret-key')
 db = SQLAlchemy(app)
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(120), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255))
+    google_id = db.Column(db.String(255), unique=True, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+    expenses = db.relationship('Expense', backref='user', lazy=True, cascade='all, delete-orphan')
 
 class Expense(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     description = db.Column(db.String(120), nullable=False)
     amount = db.Column(db.Float, nullable=False)
     category = db.Column(db.String(120), nullable=False)
-    date = db.Column(db.Date, nullable=False, default=date.today) 
+    date = db.Column(db.Date, nullable=False, default=date.today)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) 
 
 with app.app_context():
     db.create_all()
 
+def format_month_label(year_month_str):
+    """Convert YYYY-MM format to Month Year format (e.g., 2024-01 -> January 2024)"""
+    try:
+        date_obj = datetime.strptime(year_month_str, '%Y-%m').date()
+        return date_obj.strftime('%B %Y')  # e.g., "January 2024"
+    except (ValueError, TypeError):
+        return year_month_str
+
+def login_required(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash("Please log in first", "error")
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route("/signup", methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        username = (request.form.get("username") or "").strip()
+        email = (request.form.get("email") or "").strip()
+        password = (request.form.get("password") or "").strip()
+        confirm_password = (request.form.get("confirm_password") or "").strip()
+
+        if not username or not email or not password:
+            flash("Please fill all fields", "error")
+            return redirect(url_for("signup"))
+
+        if password != confirm_password:
+            flash("Passwords do not match", "error")
+            return redirect(url_for("signup"))
+
+        if User.query.filter_by(username=username).first():
+            flash("Username already exists", "error")
+            return redirect(url_for("signup"))
+
+        if User.query.filter_by(email=email).first():
+            flash("Email already exists", "error")
+            return redirect(url_for("signup"))
+
+        user = User(username=username, email=email, password_hash=generate_password_hash(password))
+        db.session.add(user)
+        db.session.commit()
+
+        flash("Sign up successful! Please log in.", "success")
+        return redirect(url_for("login"))
+
+    return render_template("signup.html")
+
+@app.route("/login", methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = (request.form.get("email") or "").strip()
+        password = (request.form.get("password") or "").strip()
+
+        if not email or not password:
+            flash("Please fill all fields", "error")
+            return redirect(url_for("login"))
+
+        user = User.query.filter_by(email=email).first()
+
+        if not user or not check_password_hash(user.password_hash, password):
+            flash("Invalid email or password", "error")
+            return redirect(url_for("login"))
+
+        session['user_id'] = user.id
+        session['username'] = user.username
+        flash(f"Welcome {user.username}!", "success")
+        return redirect(url_for("index"))
+
+    return render_template("login.html")
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    flash("You have been logged out", "success")
+    return redirect(url_for("login"))
+
 @app.route("/")
+@login_required
 def index():
     start_date = request.args.get('start', '').strip()
     end_date = request.args.get('end', '').strip()
     category = request.args.get('category', '').strip()
 
-    query = Expense.query
+    query = Expense.query.filter_by(user_id=session['user_id'])
 
     if start_date:
         try:
@@ -48,14 +142,32 @@ def index():
     expenses = query.order_by(Expense.date.desc(), Expense.id.desc()).all()
     total = sum(e.amount for e in expenses)
 
-    category_stats = db.session.query(Expense.category, func.sum(Expense.amount)).group_by(Expense.category).all()
-    time_stats = db.session.query(Expense.date, func.sum(Expense.amount)).group_by(Expense.date).order_by(Expense.date).all()
+    category_stats = db.session.query(Expense.category, func.sum(Expense.amount)).filter(Expense.user_id==session['user_id']).group_by(Expense.category).all()
+    time_stats = db.session.query(Expense.date, func.sum(Expense.amount)).filter(Expense.user_id==session['user_id']).group_by(Expense.date).order_by(Expense.date).all()
 
     cat_labels = [c for c, _ in category_stats]
     cat_values = [float(v) for _, v in category_stats]
 
     day_labels = [d.strftime("%Y-%m-%d") for d, _ in time_stats]
     day_values = [float(v) for _, v in time_stats]
+
+    # Monthly analytics
+    monthly_stats = db.session.query(
+        func.strftime('%Y-%m', Expense.date),
+        func.sum(Expense.amount)
+    ).filter(Expense.user_id==session['user_id']).group_by(
+        func.strftime('%Y-%m', Expense.date)
+    ).order_by(func.strftime('%Y-%m', Expense.date)).all()
+
+    month_labels = [format_month_label(m) for m, _ in monthly_stats]
+    month_values = [float(v) if v else 0 for _, v in monthly_stats]
+
+    # Highest spending category
+    highest_category = None
+    highest_amount = 0
+    if category_stats:
+        highest_category = max(category_stats, key=lambda x: x[1])[0]
+        highest_amount = max(category_stats, key=lambda x: x[1])[1]
 
     return render_template(
         "index.html",
@@ -68,16 +180,21 @@ def index():
         cat_values=cat_values,
         day_labels=day_labels,
         day_values=day_values,
+        month_labels=month_labels,
+        month_values=month_values,
+        highest_category=highest_category,
+        highest_amount=highest_amount,
     )
 
 @app.route("/edit/<int:expense_id>")
+@login_required
 def edit(expense_id):
-    exp = Expense.query.get_or_404(expense_id)
+    exp = Expense.query.filter_by(id=expense_id, user_id=session['user_id']).first_or_404()
     start_date = request.args.get('start', '').strip()
     end_date = request.args.get('end', '').strip()
     category = request.args.get('category', '').strip()
 
-    query = Expense.query
+    query = Expense.query.filter_by(user_id=session['user_id'])
     if start_date:
         try:
             sd = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -96,13 +213,31 @@ def edit(expense_id):
     expenses = query.order_by(Expense.date.desc(), Expense.id.desc()).all()
     total = sum(e.amount for e in expenses)
 
-    category_stats = db.session.query(Expense.category, func.sum(Expense.amount)).group_by(Expense.category).all()
-    time_stats = db.session.query(Expense.date, func.sum(Expense.amount)).group_by(Expense.date).order_by(Expense.date).all()
+    category_stats = db.session.query(Expense.category, func.sum(Expense.amount)).filter(Expense.user_id==session['user_id']).group_by(Expense.category).all()
+    time_stats = db.session.query(Expense.date, func.sum(Expense.amount)).filter(Expense.user_id==session['user_id']).group_by(Expense.date).order_by(Expense.date).all()
 
     cat_labels = [c for c, _ in category_stats]
     cat_values = [float(v) for _, v in category_stats]
     day_labels = [d.strftime("%Y-%m-%d") for d, _ in time_stats]
     day_values = [float(v) for _, v in time_stats]
+
+    # Monthly analytics
+    monthly_stats = db.session.query(
+        func.strftime('%Y-%m', Expense.date),
+        func.sum(Expense.amount)
+    ).filter(Expense.user_id==session['user_id']).group_by(
+        func.strftime('%Y-%m', Expense.date)
+    ).order_by(func.strftime('%Y-%m', Expense.date)).all()
+
+    month_labels = [format_month_label(m) for m, _ in monthly_stats]
+    month_values = [float(v) if v else 0 for _, v in monthly_stats]
+
+    # Highest spending category
+    highest_category = None
+    highest_amount = 0
+    if category_stats:
+        highest_category = max(category_stats, key=lambda x: x[1])[0]
+        highest_amount = max(category_stats, key=lambda x: x[1])[1]
 
     return render_template(
         "index.html",
@@ -115,16 +250,21 @@ def edit(expense_id):
         cat_values=cat_values,
         day_labels=day_labels,
         day_values=day_values,
+        month_labels=month_labels,
+        month_values=month_values,
+        highest_category=highest_category,
+        highest_amount=highest_amount,
         edit_expense=exp,
     )
 
 @app.route("/download")
+@login_required
 def download_csv():
     start_date = request.args.get('start', '').strip()
     end_date = request.args.get('end', '').strip()
     category = request.args.get('category', '').strip()
 
-    query = Expense.query
+    query = Expense.query.filter_by(user_id=session['user_id'])
 
     if start_date:
         try:
@@ -159,6 +299,7 @@ def download_csv():
     return response
 
 @app.route("/add",methods=['POST'])
+@login_required
 def add():
 
      description = (request.form.get("description") or "").strip()
@@ -188,16 +329,17 @@ def add():
          flash("Date must be in YYYY-MM-DD format", "error")
          return redirect(url_for("index"))
 
-     e = Expense(description=description, amount=amount, category=category, date=d)
+     e = Expense(description=description, amount=amount, category=category, date=d, user_id=session['user_id'])
      db.session.add(e)
      db.session.commit()
      
-     flash("Expense added successfully")
+     flash("Expense added successfully", "success")
      return redirect(url_for("index"))
 
 @app.route("/update/<int:expense_id>", methods=['POST'])
+@login_required
 def update(expense_id):
-    exp = Expense.query.get_or_404(expense_id)
+    exp = Expense.query.filter_by(id=expense_id, user_id=session['user_id']).first_or_404()
 
     description = (request.form.get("description") or "").strip()
     amount_str = (request.form.get("amount") or "").strip()
@@ -235,20 +377,22 @@ def update(expense_id):
     return redirect(url_for("index"))
 
 @app.route("/delete/<int:expense_id>",methods=['POST'])
+@login_required
 def delete(expense_id):
-    e = Expense.query.get_or_404(expense_id)
+    e = Expense.query.filter_by(id=expense_id, user_id=session['user_id']).first_or_404()
     db.session.delete(e)
     db.session.commit()
-    flash("Record deleted")
+    flash("Record deleted", "success")
     return redirect(url_for("index"))   
 
 @app.route("/clear", methods=['POST'])
+@login_required
 def clear_expenses():
-    num = Expense.query.delete()
+    num = Expense.query.filter_by(user_id=session['user_id']).delete()
     db.session.commit()
     flash(f"All expenses cleared ({num} records removed)", "success")
     return redirect(url_for("index"))   
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=4848)
+    app.run(debug=False, port=4848)
