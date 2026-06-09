@@ -1,11 +1,5 @@
-from flask import Flask
-
-app = Flask(__name__)
-
-@app.get("/")
-def home():
-    return "hello expense tracker is coming soon"
+"""Entry point — run with: python app.py"""
+from expense import app
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0",debug=True)
-    
+    app.run(debug=False, port=4848)
