@@ -3,12 +3,24 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from datetime import date, datetime
 from werkzeug.security import generate_password_hash, check_password_hash
-import calendar
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///expenses.db'
+# Try to use PostgreSQL from DATABASE_URL, fallback to SQLite for testing
+database_url = os.environ.get('DATABASE_URL')
+if database_url:
+    # Railway/Heroku sometimes use postgres:// instead of postgresql://
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///expenses.db'
+    print("Using SQLite for testing. Set DATABASE_URL for PostgreSQL.")
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'my-secret-key')
 db = SQLAlchemy(app)
@@ -53,6 +65,9 @@ def login_required(f):
 
 @app.route("/signup", methods=['GET', 'POST'])
 def signup():
+    if 'user_id' in session:
+        return redirect(url_for("index"))
+
     if request.method == 'POST':
         username = (request.form.get("username") or "").strip()
         email = (request.form.get("email") or "").strip()
@@ -86,6 +101,9 @@ def signup():
 
 @app.route("/login", methods=['GET', 'POST'])
 def login():
+    if 'user_id' in session:
+        return redirect(url_for("index"))
+
     if request.method == 'POST':
         email = (request.form.get("email") or "").strip()
         password = (request.form.get("password") or "").strip()
@@ -151,16 +169,15 @@ def index():
     day_labels = [d.strftime("%Y-%m-%d") for d, _ in time_stats]
     day_values = [float(v) for _, v in time_stats]
 
-    # Monthly analytics
-    monthly_stats = db.session.query(
-        func.strftime('%Y-%m', Expense.date),
-        func.sum(Expense.amount)
-    ).filter(Expense.user_id==session['user_id']).group_by(
-        func.strftime('%Y-%m', Expense.date)
-    ).order_by(func.strftime('%Y-%m', Expense.date)).all()
-
-    month_labels = [format_month_label(m) for m, _ in monthly_stats]
-    month_values = [float(v) if v else 0 for _, v in monthly_stats]
+    # Monthly analytics - format dates in Python for database compatibility
+    all_expenses = Expense.query.filter_by(user_id=session['user_id']).order_by(Expense.date).all()
+    monthly_dict = {}
+    for exp in all_expenses:
+        month_key = exp.date.strftime('%Y-%m')
+        monthly_dict[month_key] = monthly_dict.get(month_key, 0) + exp.amount
+    
+    month_labels = [format_month_label(m) for m in sorted(monthly_dict.keys())]
+    month_values = [float(monthly_dict[m]) for m in sorted(monthly_dict.keys())]
 
     # Highest spending category
     highest_category = None
@@ -221,16 +238,15 @@ def edit(expense_id):
     day_labels = [d.strftime("%Y-%m-%d") for d, _ in time_stats]
     day_values = [float(v) for _, v in time_stats]
 
-    # Monthly analytics
-    monthly_stats = db.session.query(
-        func.strftime('%Y-%m', Expense.date),
-        func.sum(Expense.amount)
-    ).filter(Expense.user_id==session['user_id']).group_by(
-        func.strftime('%Y-%m', Expense.date)
-    ).order_by(func.strftime('%Y-%m', Expense.date)).all()
-
-    month_labels = [format_month_label(m) for m, _ in monthly_stats]
-    month_values = [float(v) if v else 0 for _, v in monthly_stats]
+    # Monthly analytics - format dates in Python for database compatibility
+    all_expenses = Expense.query.filter_by(user_id=session['user_id']).order_by(Expense.date).all()
+    monthly_dict = {}
+    for exp in all_expenses:
+        month_key = exp.date.strftime('%Y-%m')
+        monthly_dict[month_key] = monthly_dict.get(month_key, 0) + exp.amount
+    
+    month_labels = [format_month_label(m) for m in sorted(monthly_dict.keys())]
+    month_values = [float(monthly_dict[m]) for m in sorted(monthly_dict.keys())]
 
     # Highest spending category
     highest_category = None
